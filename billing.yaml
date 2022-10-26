@@ -1,0 +1,88 @@
+version: "3.8"
+
+volumes:
+  billing_db:
+  billing_static:
+  billing_rabbitmq:
+  billing_log_rabbitmq:
+
+services:
+#================================
+#      POSTGRES
+#================================
+  billing_db:
+    image: postgres:14-alpine
+    container_name: billing_db
+    restart: always
+    volumes:
+      - billing_db:/var/lib/postgresql/data/
+    environment:
+      - POSTGRES_USER=django
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=billing_db
+
+#================================
+#      RABBITMQ
+#================================
+  billing_rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: billing_rabbitmq
+    restart: always
+    volumes:
+      - billing_rabbitmq:/var/lib/rabbitmq/
+      - billing_log_rabbitmq:/var/log/rabbitmq
+
+#================================
+#       WEB APPLICATION
+#================================
+  billing_app:
+    build:
+      context: .
+      dockerfile: ./billing/Dockerfile
+    image: &billing_app billing_app
+    container_name: billing_app
+    restart: on-failure
+    command: python manage.py runserver 0.0.0.0:8000
+    env_file:
+      - ./billing/.env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - billing_db
+    volumes:
+      - billing_static:/billing/src/static
+
+  #================================
+  #       CELERY
+  #================================
+  billing_celery-worker:
+    build:
+      context: .
+      dockerfile: ./billing/Dockerfile
+    image: *billing_app
+    container_name: billing_celery_worker
+    command: >-
+      celery -A conf.celery:app worker --loglevel=INFO -c "8" -Ofair -E
+      -Q default
+    env_file:
+      - ./billing/.env
+    environment:
+      - DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}
+    depends_on:
+      - billing_db
+      - billing_rabbitmq
+      - billing_app
+
+  billing_celerybeat:
+    image: *billing_app
+    container_name: billing_celerybeat
+    command: >-
+      celery -A conf.celery:app beat --loglevel=INFO
+    env_file:
+      - ./billing/.env
+    environment:
+      - DATABASE_URL=postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}
+    depends_on:
+      - billing_db
+      - billing_rabbitmq
+      - billing_app
